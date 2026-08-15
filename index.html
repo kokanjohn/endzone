@@ -1,0 +1,334 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Draft Assistant</title>
+<style>
+  :root { --bg:#0f1216; --panel:#171c22; --line:#28313b; --text:#e6edf3;
+          --muted:#8b98a5; --accent:#3fb950; --hot:#f0883e; --you:#1f6feb; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--text);
+         font:14px/1.45 system-ui,-apple-system,Segoe UI,Roboto,sans-serif; }
+  header { display:flex; align-items:center; gap:14px; padding:10px 16px;
+           border-bottom:1px solid var(--line); background:var(--panel); position:sticky; top:0; }
+  nav { display:flex; gap:4px; }
+  nav button { background:none; border:0; color:var(--muted); padding:7px 12px;
+               border-radius:6px; cursor:pointer; font-size:14px; }
+  nav button.active { background:var(--bg); color:var(--text); }
+  .grow { flex:1; }
+  .dot { width:9px; height:9px; border-radius:50%; background:#666; display:inline-block; }
+  .dot.ok { background:var(--accent); } .dot.err { background:#f85149; }
+  main { padding:16px; max-width:1000px; margin:0 auto; }
+  .status { display:flex; align-items:center; gap:16px; flex-wrap:wrap;
+            padding:12px 14px; background:var(--panel); border:1px solid var(--line);
+            border-radius:8px; margin-bottom:14px; }
+  .status.you { border-color:var(--you); box-shadow:0 0 0 1px var(--you); }
+  .pick { font-size:22px; font-weight:700; }
+  .onclock { color:var(--you); font-weight:700; }
+  .needs span, .filters button { display:inline-block; padding:3px 9px; margin:2px;
+            border-radius:999px; font-size:12px; }
+  .needs span { background:#20262e; color:var(--muted); }
+  .filters button { background:#20262e; color:var(--text); border:1px solid var(--line); cursor:pointer; }
+  .filters button.active { background:var(--you); border-color:var(--you); }
+  table { width:100%; border-collapse:collapse; }
+  th,td { text-align:left; padding:7px 8px; border-bottom:1px solid var(--line); }
+  th { color:var(--muted); font-weight:600; font-size:12px; text-transform:uppercase; letter-spacing:.03em; }
+  td.num { text-align:right; font-variant-numeric:tabular-nums; }
+  .pos { font-weight:700; font-size:11px; padding:1px 6px; border-radius:4px; background:#20262e; }
+  .flag { font-size:11px; color:var(--hot); }
+  .mark { background:none; border:1px solid var(--line); color:var(--muted);
+          border-radius:5px; padding:2px 7px; cursor:pointer; font-size:12px; }
+  .mark:hover { color:var(--text); border-color:var(--muted); }
+  .two { display:grid; grid-template-columns:1fr 260px; gap:16px; }
+  @media(max-width:760px){ .two{ grid-template-columns:1fr; } }
+  .card { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:14px; }
+  .card h3 { margin:0 0 8px; font-size:13px; color:var(--muted); text-transform:uppercase; letter-spacing:.03em; }
+  .roster li { list-style:none; padding:3px 0; border-bottom:1px solid var(--line); }
+  .stub { text-align:center; color:var(--muted); padding:48px 20px; }
+  .stub h2 { color:var(--text); }
+  small.meta { color:var(--muted); }
+  input,select { background:var(--bg); color:var(--text); border:1px solid var(--line);
+                 border-radius:5px; padding:4px 6px; }
+  .hidden { display:none; }
+</style>
+</head>
+<body>
+<header>
+  <strong>Draft&nbsp;Assistant</strong>
+  <nav>
+    <button data-tab="draft" class="active">Draft</button>
+    <button data-tab="waivers">Waivers</button>
+    <button data-tab="trades">Trades</button>
+  </nav>
+  <span class="grow"></span>
+  <label style="font-size:12px;color:var(--muted)">Your slot
+    <input id="slot" type="number" min="1" style="width:56px" placeholder="auto" />
+  </label>
+  <label style="font-size:12px;color:var(--muted)">
+    <input id="polling" type="checkbox" checked /> live poll
+  </label>
+  <span class="dot" id="conn" title="connection"></span>
+</header>
+
+<main>
+  <!-- DRAFT TAB -->
+  <section id="tab-draft">
+    <div class="status" id="statusBar">
+      <div><div class="pick" id="pickNo">—</div><small class="meta" id="roundInfo"></small></div>
+      <div id="clockInfo"></div>
+      <div class="grow"></div>
+      <div class="needs" id="needs"></div>
+    </div>
+
+    <div class="filters" id="filters">
+      <button data-pos="ALL" class="active">All</button>
+      <button data-pos="QB">QB</button><button data-pos="RB">RB</button>
+      <button data-pos="WR">WR</button><button data-pos="TE">TE</button>
+      <button data-pos="K">K</button><button data-pos="DST">DST</button>
+    </div>
+
+    <div class="two" style="margin-top:12px">
+      <div class="card">
+        <h3>Best available <small class="meta" id="genMeta"></small></h3>
+        <table>
+          <thead><tr>
+            <th>#</th><th>Player</th><th>Pos</th><th>Tm</th>
+            <th class="num">Val</th><th class="num">VOR</th><th class="num">ADP</th>
+            <th class="num">Tier</th><th></th><th></th>
+          </tr></thead>
+          <tbody id="board"><tr><td colspan="10" class="meta">Loading…</td></tr></tbody>
+        </table>
+      </div>
+      <div>
+        <div class="card"><h3>Your roster</h3><ul class="roster" id="myRoster"></ul></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- WAIVERS STUB -->
+  <section id="tab-waivers" class="hidden">
+    <div class="stub card">
+      <h2>Waiver-Wire Analyzer</h2>
+      <p>Coming soon. Weekly: rank available free agents by blended projected value,
+         recent usage trend, upcoming matchup / strength of schedule, and injury-created
+         opportunity — so you grab the right pickup before your league-mates do.</p>
+    </div>
+  </section>
+
+  <!-- TRADES STUB -->
+  <section id="tab-trades" class="hidden">
+    <div class="stub card">
+      <h2>Trade Finder</h2>
+      <p>Coming soon. Scans every roster to find players to target, then builds a
+         <em>fair</em>, mutually-beneficial counter-offer (scored with FantasyCalc trade
+         values so both sides land in a realistic band and each team's positional needs
+         are addressed) — not a lopsided offer that gets ignored.</p>
+    </div>
+  </section>
+</main>
+
+<script>
+// Paste your Cloudflare Worker URL here, e.g. "https://draft-api.yourname.workers.dev"
+// Leave "" only if you deploy the API on the same origin as this page.
+const API_BASE = "";
+const api = p => (API_BASE || "") + p;
+
+const S = { rankings:[], byEspn:new Map(), settings:null, drafted:new Map(),
+            manual:new Set(), filter:"ALL", pollTimer:null };
+
+// ---------- load ----------
+async function load() {
+  try {
+    const rk = await fetch("data/rankings.json", {cache:"no-store"}).then(r=>r.json());
+    S.rankings = rk.players || [];
+    S.rankings.forEach(p => { if (p.espn_id) S.byEspn.set(p.espn_id, p); });
+    document.getElementById("genMeta").textContent =
+      `· ${rk.count} players · ${rk.scoring} · built ${new Date(rk.generatedAt).toLocaleString()}`;
+  } catch(e) {
+    document.getElementById("board").innerHTML =
+      `<tr><td colspan="10" class="meta">No rankings.json yet — run the “Build rankings” workflow in the GitHub Actions tab, then reload.</td></tr>`;
+  }
+  try { S.settings = await fetch(api("/api/settings")).then(r=>r.json()); }
+  catch(e) { S.settings = { error:String(e) }; }
+  if (S.settings?.starters) computeVOR();
+  render();
+  startPolling();
+}
+
+// ---------- VOR (uses your real league settings) ----------
+function computeVOR() {
+  const st = S.settings, teams = st.numTeams || 12;
+  const withPts = S.rankings.filter(p => p.proj_pts != null);
+  if (!withPts.length) return;
+  const flexShare = (st.starters.FLEX || 0) * teams;
+  const flexPos = ["RB","WR","TE"];
+  const baselines = {};
+  for (const pos of ["QB","RB","WR","TE","K","DST"]) {
+    let slots = (st.starters[pos] || 0) * teams;
+    if (flexPos.includes(pos)) slots += Math.floor(flexShare / flexPos.length);
+    const pool = withPts.filter(p=>p.pos===pos).sort((a,b)=>b.proj_pts-a.proj_pts);
+    if (pool.length && slots > 0) baselines[pos] = pool[Math.min(slots,pool.length)-1].proj_pts;
+  }
+  for (const p of withPts) {
+    const b = baselines[p.pos];
+    p.vor = (b!=null) ? Math.round(p.proj_pts - b) : null;
+  }
+}
+
+// ---------- draft polling ----------
+function startPolling() {
+  if (S.pollTimer) clearInterval(S.pollTimer);
+  const tick = async () => {
+    if (!document.getElementById("polling").checked) return;
+    try {
+      const d = await fetch(api("/api/draft")).then(r=>r.json());
+      if (d.error) throw new Error(d.error);
+      S.drafted.clear();
+      (d.picks||[]).forEach(pk => S.drafted.set(pk.espn_id, pk));
+      setConn(true); render();
+    } catch(e) { setConn(false); }
+  };
+  tick();
+  S.pollTimer = setInterval(tick, 5000);
+}
+const setConn = ok => { const el=document.getElementById("conn");
+  el.className = "dot " + (ok?"ok":"err"); };
+
+// ---------- draft math ----------
+function myPicks() {
+  const id = S.settings?.myTeamId;
+  return [...S.drafted.values()].filter(pk => pk.team_id === id);
+}
+function rosterNeeds() {
+  const st = S.settings; if (!st?.starters) return {};
+  const need = {...st.starters};
+  const counts = {};
+  myPicks().forEach(pk => { const p=S.byEspn.get(pk.espn_id); if(p) counts[p.pos]=(counts[p.pos]||0)+1; });
+  const out = {};
+  for (const pos of ["QB","RB","WR","TE","K","DST"]) {
+    const left = (need[pos]||0) - Math.min(counts[pos]||0, need[pos]||0);
+    if (left > 0) out[pos] = left;
+  }
+  const surplus = ["RB","WR","TE"].reduce((a,pos)=>a+Math.max(0,(counts[pos]||0)-(st.starters[pos]||0)),0);
+  const flexLeft = Math.max(0,(st.starters.FLEX||0)-surplus);
+  if (flexLeft>0) out.FLEX = flexLeft;
+  return out;
+}
+function mySlot() {
+  const override = parseInt(document.getElementById("slot").value,10);
+  if (override) return override;
+  const st = S.settings;
+  if (st?.draftOrder?.length && st.draftOrder.includes(st.myTeamId))
+    return st.draftOrder.indexOf(st.myTeamId)+1;
+  return null;
+}
+function onClockIsMe(currentPick) {
+  const st = S.settings, n = st?.numTeams || 12, slot = mySlot();
+  if (st?.draftOrder?.length) {
+    const rnd = Math.floor((currentPick-1)/n), i=(currentPick-1)%n;
+    const idx = rnd%2 ? n-1-i : i;
+    return st.draftOrder[idx] === st.myTeamId;
+  }
+  if (slot) {
+    let s = ((currentPick-1)%n)+1; const rnd=Math.floor((currentPick-1)/n);
+    if (rnd%2) s = n - s + 1;
+    return s === slot;
+  }
+  return false;
+}
+function myNextPick(currentPick) {
+  const n = S.settings?.numTeams || 12, slot = mySlot(); if (!slot) return null;
+  const rnd = Math.floor((currentPick-1)/n);
+  for (let r=rnd; r<rnd+3; r++) {
+    const base=r*n, p=base+(r%2===0?slot:n-slot+1);
+    if (p>=currentPick) return p;
+  }
+  return null;
+}
+
+// ---------- best available ----------
+function bestAvailable() {
+  const needs = rosterNeeds(), needPos = new Set(Object.keys(needs)), flexOpen = (needs.FLEX||0)>0;
+  const currentPick = S.drafted.size + 1, next = myNextPick(currentPick);
+  const avail = S.rankings.filter(p =>
+    p.value>0 &&
+    (!p.espn_id || !S.drafted.has(p.espn_id)) &&
+    !S.manual.has(p.sleeper_id) &&
+    (S.filter==="ALL" || p.pos===S.filter));
+  const score = p => {
+    let s = p.value + (p.vor||0)*0.15;
+    if (needPos.has(p.pos)) s += 6;
+    else if (flexOpen && ["RB","WR","TE"].includes(p.pos)) s += 3;
+    if (next && p.adp && p.adp < next) s += 4;   // likely gone before your next pick
+    return s;
+  };
+  return avail.sort((a,b)=>score(b)-score(a)).slice(0,40);
+}
+
+// ---------- render ----------
+function render() {
+  const currentPick = S.drafted.size + 1;
+  const n = S.settings?.numTeams || 12;
+  const me = onClockIsMe(currentPick);
+  document.getElementById("pickNo").textContent = "Pick " + currentPick;
+  document.getElementById("roundInfo").textContent =
+    `Round ${Math.floor((currentPick-1)/n)+1} · ${n} teams`;
+  document.getElementById("clockInfo").innerHTML =
+    me ? '<span class="onclock">▶ YOU\'RE ON THE CLOCK</span>' : '<span class="meta">waiting…</span>';
+  document.getElementById("statusBar").classList.toggle("you", me);
+
+  const needs = rosterNeeds();
+  document.getElementById("needs").innerHTML =
+    Object.keys(needs).length
+      ? Object.entries(needs).map(([p,c])=>`<span>${p}×${c}</span>`).join("")
+      : (S.settings?.error ? `<span style="color:#f85149">settings error</span>` : `<span>roster set</span>`);
+
+  const rows = bestAvailable().map((p,i)=>{
+    const flags = [];
+    if (p.spread>12) flags.push("split");
+    if (p.outliers?.length) flags.push("outlier");
+    return `<tr>
+      <td class="num">${i+1}</td>
+      <td>${p.name}</td>
+      <td><span class="pos">${p.pos}</span></td>
+      <td>${p.team||""}</td>
+      <td class="num">${p.value.toFixed(0)}</td>
+      <td class="num">${p.vor!=null?(p.vor>0?"+":"")+p.vor:"—"}</td>
+      <td class="num">${p.adp!=null?p.adp.toFixed(1):"—"}</td>
+      <td class="num">${p.tier||"—"}</td>
+      <td class="flag">${flags.join(" ")}</td>
+      <td><button class="mark" data-sid="${p.sleeper_id}">drafted</button></td>
+    </tr>`;
+  }).join("");
+  document.getElementById("board").innerHTML = rows ||
+    `<tr><td colspan="10" class="meta">No players — check rankings.json / settings.</td></tr>`;
+
+  document.getElementById("myRoster").innerHTML =
+    myPicks().map(pk=>{ const p=S.byEspn.get(pk.espn_id);
+      return `<li>${p?`<span class="pos">${p.pos}</span> ${p.name}`:`#${pk.espn_id}`}</li>`; }).join("")
+    || `<li class="meta">no picks yet</li>`;
+}
+
+// ---------- events ----------
+document.querySelectorAll("nav button").forEach(b => b.onclick = () => {
+  document.querySelectorAll("nav button").forEach(x=>x.classList.remove("active"));
+  b.classList.add("active");
+  ["draft","waivers","trades"].forEach(t =>
+    document.getElementById("tab-"+t).classList.toggle("hidden", t!==b.dataset.tab));
+});
+document.getElementById("filters").onclick = e => {
+  if (e.target.dataset.pos) {
+    document.querySelectorAll("#filters button").forEach(x=>x.classList.remove("active"));
+    e.target.classList.add("active"); S.filter = e.target.dataset.pos; render();
+  }
+};
+document.getElementById("board").onclick = e => {
+  if (e.target.dataset.sid) { S.manual.add(e.target.dataset.sid); render(); }
+};
+document.getElementById("slot").onchange = render;
+
+load();
+</script>
+</body>
+</html>

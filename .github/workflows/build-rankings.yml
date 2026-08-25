@@ -1,0 +1,38 @@
+name: Build rankings
+
+on:
+  workflow_dispatch:            # lets you run it manually from the Actions tab
+    inputs:
+      scoring:
+        description: "ppr | half-ppr | standard"
+        default: "ppr"
+      teams:
+        description: "number of teams in your league"
+        default: "12"
+  schedule:
+    - cron: "0 11 * * *"        # daily at ~11:00 UTC (7am ET)
+
+permissions:
+  contents: write               # allows the job to commit rankings.json back
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Build rankings
+        env:
+          SEASON: "2026"
+          SCORING: ${{ github.event.inputs.scoring || 'ppr' }}
+          TEAMS: ${{ github.event.inputs.teams || '12' }}
+        run: node scripts/build-rankings.mjs
+      - name: Commit if changed
+        run: |
+          git config user.name  "rankings-bot"
+          git config user.email "rankings-bot@users.noreply.github.com"
+          git add data/rankings.json
+          git commit -m "Update rankings $(date -u +%FT%TZ)" || echo "no changes"
+          git push

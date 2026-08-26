@@ -11,7 +11,7 @@
   body { margin:0; background:var(--bg); color:var(--text);
          font:14px/1.45 system-ui,-apple-system,Segoe UI,Roboto,sans-serif; }
   header { display:flex; align-items:center; gap:14px; padding:10px 16px;
-           border-bottom:1px solid var(--line); background:var(--panel); position:sticky; top:0; }
+           border-bottom:1px solid var(--line); background:var(--panel); position:sticky; top:0; z-index:5; }
   nav { display:flex; gap:4px; }
   nav button { background:none; border:0; color:var(--muted); padding:7px 12px;
                border-radius:6px; cursor:pointer; font-size:14px; }
@@ -20,12 +20,16 @@
   .dot { width:9px; height:9px; border-radius:50%; background:#666; display:inline-block; }
   .dot.ok { background:var(--accent); } .dot.err { background:#f85149; }
   main { padding:16px; max-width:1000px; margin:0 auto; }
+  .warn { padding:9px 13px; border-radius:8px; margin-bottom:12px; font-size:13px;
+          background:#3a2a12; border:1px solid #7a531c; color:#f0c98a; }
+  .warn.test { background:#12293a; border-color:#1c5a7a; color:#8ac6f0; }
   .status { display:flex; align-items:center; gap:16px; flex-wrap:wrap;
             padding:12px 14px; background:var(--panel); border:1px solid var(--line);
             border-radius:8px; margin-bottom:14px; }
   .status.you { border-color:var(--you); box-shadow:0 0 0 1px var(--you); }
   .pick { font-size:22px; font-weight:700; }
   .onclock { color:var(--you); font-weight:700; }
+  .until { font-weight:700; }
   .needs span, .filters button { display:inline-block; padding:3px 9px; margin:2px;
             border-radius:999px; font-size:12px; }
   .needs span { background:#20262e; color:var(--muted); }
@@ -40,6 +44,7 @@
   .mark { background:none; border:1px solid var(--line); color:var(--muted);
           border-radius:5px; padding:2px 7px; cursor:pointer; font-size:12px; }
   .mark:hover { color:var(--text); border-color:var(--muted); }
+  .link { background:none; border:0; color:var(--muted); cursor:pointer; font-size:12px; text-decoration:underline; }
   .two { display:grid; grid-template-columns:1fr 260px; gap:16px; }
   @media(max-width:760px){ .two{ grid-template-columns:1fr; } }
   .card { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:14px; }
@@ -72,6 +77,8 @@
 </header>
 
 <main>
+  <div id="banner"></div>
+
   <!-- DRAFT TAB -->
   <section id="tab-draft">
     <div class="status" id="statusBar">
@@ -86,6 +93,8 @@
       <button data-pos="QB">QB</button><button data-pos="RB">RB</button>
       <button data-pos="WR">WR</button><button data-pos="TE">TE</button>
       <button data-pos="K">K</button><button data-pos="DST">DST</button>
+      <span class="grow"></span>
+      <span id="manualInfo"></span>
     </div>
 
     <div class="two" style="margin-top:12px">
@@ -129,16 +138,42 @@
 </main>
 
 <script>
-// Paste your Cloudflare Worker URL here, e.g. "https://draft-api.yourname.workers.dev"
-// Leave "" only if you deploy the API on the same origin as this page.
+// ---- API endpoint -------------------------------------------------------
+// This should match the Worker URL that returns your team JSON at /api/settings.
 const API_BASE = "https://draft-api.baseball-gm.workers.dev";
-const api = p => (API_BASE || "") + p;
+
+// TEST MODE: add ?test=1 to this page's URL to point at your test league.
+// The real league is always the default, so your real draft is never at risk.
+const TEST = new URLSearchParams(location.search).get("test") === "1";
+const api = p => (API_BASE || "") + p + (TEST ? (p.includes("?") ? "&" : "?") + "test=1" : "");
+
+const STORE_KEY = "endzone:" + (TEST ? "test" : "live");
 
 const S = { rankings:[], byEspn:new Map(), settings:null, drafted:new Map(),
             manual:new Set(), filter:"ALL", pollTimer:null };
 
+// ---------- local persistence (survives refresh / crash) ----------
+function saveState() {
+  try {
+    localStorage.setItem(STORE_KEY, JSON.stringify({
+      manual: [...S.manual],
+      slot: document.getElementById("slot").value,
+      polling: document.getElementById("polling").checked,
+    }));
+  } catch(e) {}
+}
+function loadState() {
+  try {
+    const s = JSON.parse(localStorage.getItem(STORE_KEY) || "{}");
+    (s.manual || []).forEach(x => S.manual.add(x));
+    if (s.slot) document.getElementById("slot").value = s.slot;
+    if (s.polling === false) document.getElementById("polling").checked = false;
+  } catch(e) {}
+}
+
 // ---------- load ----------
 async function load() {
+  loadState();
   try {
     const rk = await fetch("data/rankings.json", {cache:"no-store"}).then(r=>r.json());
     S.rankings = rk.players || [];
@@ -147,7 +182,7 @@ async function load() {
       `· ${rk.count} players · ${rk.scoring} · built ${new Date(rk.generatedAt).toLocaleString()}`;
   } catch(e) {
     document.getElementById("board").innerHTML =
-      `<tr><td colspan="10" class="meta">No rankings.json yet — run the “Build rankings” workflow in the GitHub Actions tab, then reload.</td></tr>`;
+      `<tr><td colspan="10" class="meta">No rankings.json yet — run the "Build rankings" workflow in the GitHub Actions tab, then reload.</td></tr>`;
   }
   try { S.settings = await fetch(api("/api/settings")).then(r=>r.json()); }
   catch(e) { S.settings = { error:String(e) }; }
@@ -156,9 +191,17 @@ async function load() {
   startPolling();
 }
 
+// ---------- helpers ----------
+const teamCount = () => S.settings?.draftOrder?.length || S.settings?.numTeams || 12;
+function currentPickNo() {
+  const overalls = [...S.drafted.values()].map(p=>p.overall).filter(Number.isFinite);
+  return (overalls.length ? Math.max(...overalls) : S.drafted.size) + 1;
+}
+const teamName = id => (S.settings?.teams || []).find(t=>t.id===id)?.name || (id!=null?`Team ${id}`:"?");
+
 // ---------- VOR (uses your real league settings) ----------
 function computeVOR() {
-  const st = S.settings, teams = st.numTeams || 12;
+  const st = S.settings, teams = teamCount();
   const withPts = S.rankings.filter(p => p.proj_pts != null);
   if (!withPts.length) return;
   const flexShare = (st.starters.FLEX || 0) * teams;
@@ -223,26 +266,31 @@ function mySlot() {
     return st.draftOrder.indexOf(st.myTeamId)+1;
   return null;
 }
-function onClockIsMe(currentPick) {
-  const st = S.settings, n = st?.numTeams || 12, slot = mySlot();
-  if (st?.draftOrder?.length) {
-    const rnd = Math.floor((currentPick-1)/n), i=(currentPick-1)%n;
-    const idx = rnd%2 ? n-1-i : i;
-    return st.draftOrder[idx] === st.myTeamId;
-  }
+// team id on the clock for a given overall pick (snake). null if order unknown.
+function onClockOwnerId(cp) {
+  const st = S.settings, n = teamCount();
+  if (!st?.draftOrder?.length) return null;
+  const rnd = Math.floor((cp-1)/n), i = (cp-1)%n;
+  const idx = rnd%2 ? n-1-i : i;
+  return st.draftOrder[idx];
+}
+function onClockIsMe(cp) {
+  const st = S.settings, n = teamCount(), slot = mySlot();
+  const owner = onClockOwnerId(cp);
+  if (owner != null) return owner === st.myTeamId;
   if (slot) {
-    let s = ((currentPick-1)%n)+1; const rnd=Math.floor((currentPick-1)/n);
+    let s = ((cp-1)%n)+1; const rnd=Math.floor((cp-1)/n);
     if (rnd%2) s = n - s + 1;
     return s === slot;
   }
   return false;
 }
-function myNextPick(currentPick) {
-  const n = S.settings?.numTeams || 12, slot = mySlot(); if (!slot) return null;
-  const rnd = Math.floor((currentPick-1)/n);
+function myNextPick(cp) {
+  const n = teamCount(), slot = mySlot(); if (!slot) return null;
+  const rnd = Math.floor((cp-1)/n);
   for (let r=rnd; r<rnd+3; r++) {
     const base=r*n, p=base+(r%2===0?slot:n-slot+1);
-    if (p>=currentPick) return p;
+    if (p>=cp) return p;
   }
   return null;
 }
@@ -250,7 +298,7 @@ function myNextPick(currentPick) {
 // ---------- best available ----------
 function bestAvailable() {
   const needs = rosterNeeds(), needPos = new Set(Object.keys(needs)), flexOpen = (needs.FLEX||0)>0;
-  const currentPick = S.drafted.size + 1, next = myNextPick(currentPick);
+  const cp = currentPickNo(), next = myNextPick(cp);
   const avail = S.rankings.filter(p =>
     p.value>0 &&
     (!p.espn_id || !S.drafted.has(p.espn_id)) &&
@@ -268,14 +316,32 @@ function bestAvailable() {
 
 // ---------- render ----------
 function render() {
-  const currentPick = S.drafted.size + 1;
-  const n = S.settings?.numTeams || 12;
-  const me = onClockIsMe(currentPick);
-  document.getElementById("pickNo").textContent = "Pick " + currentPick;
+  // banners
+  let banner = "";
+  if (TEST) banner += `<div class="warn test"><strong>TEST LEAGUE MODE</strong> — pointed at your test league via <code>?test=1</code>. Remove <code>?test=1</code> from the URL for your real draft.</div>`;
+  const dt = S.settings?.draftType;
+  if (dt && !String(dt).toUpperCase().includes("SNAKE"))
+    banner += `<div class="warn">Draft type reads "<strong>${dt}</strong>", not snake — the on-the-clock math assumes a snake draft and may be off.</div>`;
+  document.getElementById("banner").innerHTML = banner;
+
+  const cp = currentPickNo();
+  const n = teamCount();
+  const me = onClockIsMe(cp);
+  document.getElementById("pickNo").textContent = "Pick " + cp;
   document.getElementById("roundInfo").textContent =
-    `Round ${Math.floor((currentPick-1)/n)+1} · ${n} teams`;
-  document.getElementById("clockInfo").innerHTML =
-    me ? '<span class="onclock">▶ YOU\'RE ON THE CLOCK</span>' : '<span class="meta">waiting…</span>';
+    `Round ${Math.floor((cp-1)/n)+1} · ${n} teams`;
+
+  const next = myNextPick(cp), until = (next!=null) ? next - cp : null;
+  let clock;
+  if (me) {
+    clock = '<span class="onclock">▶ YOU\'RE ON THE CLOCK</span>';
+  } else {
+    const owner = onClockOwnerId(cp);
+    const who = owner!=null ? `On the clock: ${teamName(owner)}` : "waiting…";
+    const cd = (until!=null) ? ` · <span class="until">${until} pick${until===1?"":"s"} until you</span>` : "";
+    clock = `<span class="meta">${who}</span>${cd}`;
+  }
+  document.getElementById("clockInfo").innerHTML = clock;
   document.getElementById("statusBar").classList.toggle("you", me);
 
   const needs = rosterNeeds();
@@ -283,6 +349,9 @@ function render() {
     Object.keys(needs).length
       ? Object.entries(needs).map(([p,c])=>`<span>${p}×${c}</span>`).join("")
       : (S.settings?.error ? `<span style="color:#f85149">settings error</span>` : `<span>roster set</span>`);
+
+  document.getElementById("manualInfo").innerHTML =
+    S.manual.size ? `<small class="meta">${S.manual.size} manual</small> <button class="link" id="clearManual">clear</button>` : "";
 
   const rows = bestAvailable().map((p,i)=>{
     const flags = [];
@@ -322,11 +391,13 @@ document.getElementById("filters").onclick = e => {
     document.querySelectorAll("#filters button").forEach(x=>x.classList.remove("active"));
     e.target.classList.add("active"); S.filter = e.target.dataset.pos; render();
   }
+  if (e.target.id === "clearManual") { S.manual.clear(); saveState(); render(); }
 };
 document.getElementById("board").onclick = e => {
-  if (e.target.dataset.sid) { S.manual.add(e.target.dataset.sid); render(); }
+  if (e.target.dataset.sid) { S.manual.add(e.target.dataset.sid); saveState(); render(); }
 };
-document.getElementById("slot").onchange = render;
+document.getElementById("slot").onchange = () => { saveState(); render(); };
+document.getElementById("polling").onchange = saveState;
 
 load();
 </script>

@@ -8,7 +8,7 @@ on:
         default: "ppr"
       teams:
         description: "number of teams in your league"
-        default: "12"
+        default: "10"
   schedule:
     - cron: "0 11 * * *"        # daily at ~11:00 UTC (7am ET)
 
@@ -27,7 +27,7 @@ jobs:
         env:
           SEASON: "2026"
           SCORING: ${{ github.event.inputs.scoring || 'ppr' }}
-          TEAMS: ${{ github.event.inputs.teams || '12' }}
+          TEAMS: ${{ github.event.inputs.teams || '10' }}
         run: node scripts/build-rankings.mjs
       - name: Commit if changed
         run: |

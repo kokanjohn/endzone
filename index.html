@@ -6,7 +6,7 @@
 <title>Draft Assistant</title>
 <style>
   :root { --bg:#0f1216; --panel:#171c22; --line:#28313b; --text:#e6edf3;
-          --muted:#8b98a5; --accent:#3fb950; --hot:#f0883e; --you:#1f6feb; }
+          --muted:#8b98a5; --accent:#3fb950; --hot:#f0883e; --you:#1f6feb; --red:#f85149; }
   * { box-sizing:border-box; }
   body { margin:0; background:var(--bg); color:var(--text);
          font:14px/1.45 system-ui,-apple-system,Segoe UI,Roboto,sans-serif; }
@@ -18,7 +18,7 @@
   nav button.active { background:var(--bg); color:var(--text); }
   .grow { flex:1; }
   .dot { width:9px; height:9px; border-radius:50%; background:#666; display:inline-block; }
-  .dot.ok { background:var(--accent); } .dot.err { background:#f85149; }
+  .dot.ok { background:var(--accent); } .dot.err { background:var(--red); }
   main { padding:16px; max-width:1000px; margin:0 auto; }
   .warn { padding:9px 13px; border-radius:8px; margin-bottom:12px; font-size:13px;
           background:#3a2a12; border:1px solid #7a531c; color:#f0c98a; }
@@ -39,8 +39,14 @@
   th,td { text-align:left; padding:7px 8px; border-bottom:1px solid var(--line); }
   th { color:var(--muted); font-weight:600; font-size:12px; text-transform:uppercase; letter-spacing:.03em; }
   td.num { text-align:right; font-variant-numeric:tabular-nums; }
+  tr.hurt td { opacity:.55; }
   .pos { font-weight:700; font-size:11px; padding:1px 6px; border-radius:4px; background:#20262e; }
   .flag { font-size:11px; color:var(--hot); }
+  .badge { font-size:10px; font-weight:700; padding:1px 5px; border-radius:4px; margin-left:6px; vertical-align:middle; }
+  .badge.out { background:#4a1518; color:#ff9a9a; }
+  .badge.dtd { background:#3a2a12; color:#f0c98a; }
+  .badge.ltd { background:#20262e; color:var(--muted); }
+  .sub { font-size:11px; color:var(--muted); margin-left:4px; }
   .mark { background:none; border:1px solid var(--line); color:var(--muted);
           border-radius:5px; padding:2px 7px; cursor:pointer; font-size:12px; }
   .mark:hover { color:var(--text); border-color:var(--muted); }
@@ -93,7 +99,9 @@
       <button data-pos="QB">QB</button><button data-pos="RB">RB</button>
       <button data-pos="WR">WR</button><button data-pos="TE">TE</button>
       <button data-pos="K">K</button><button data-pos="DST">DST</button>
+      <button data-pos="DP">DP</button>
       <span class="grow"></span>
+      <span id="injInfo"></span>
       <span id="manualInfo"></span>
     </div>
 
@@ -138,27 +146,35 @@
 </main>
 
 <script>
-// ---- API endpoint -------------------------------------------------------
-// This should match the Worker URL that returns your team JSON at /api/settings.
+// ---- API endpoint ----
+// Must match the Worker URL that returns your team JSON at /api/settings.
 const API_BASE = "https://draft-api.baseball-gm.workers.dev";
 
 // TEST MODE: add ?test=1 to this page's URL to point at your test league.
-// The real league is always the default, so your real draft is never at risk.
 const TEST = new URLSearchParams(location.search).get("test") === "1";
 const api = p => (API_BASE || "") + p + (TEST ? (p.includes("?") ? "&" : "?") + "test=1" : "");
-
 const STORE_KEY = "endzone:" + (TEST ? "test" : "live");
 
-const S = { rankings:[], byEspn:new Map(), settings:null, drafted:new Map(),
-            manual:new Set(), filter:"ALL", pollTimer:null };
+const OFF_FLEX = ["RB","WR","TE"];
+const S = { rankings:[], byEspn:new Map(), bySleeper:new Map(), settings:null,
+            drafted:new Map(), manual:new Set(), filter:"ALL", pollTimer:null, injAt:null };
 
-// ---------- local persistence (survives refresh / crash) ----------
+// ---------- injury severity (single classifier for baked + live data) ----------
+function classifyInjury(status, inj) {
+  const st = (status || "").toLowerCase(), i = (inj || "").toLowerCase();
+  const severe = /injured reserve|physically unable|non.?football|suspend/.test(st)
+              || /\bir\b|pup|nfi|\bsus\b/.test(i);
+  if (severe) return { sev:"OUT", label: (inj || status || "OUT") };
+  if (/^(out|doubtful|questionable)$/.test(i)) return { sev:"DTD", label: inj };
+  return { sev:null, label:null };
+}
+
+// ---------- local persistence ----------
 function saveState() {
   try {
     localStorage.setItem(STORE_KEY, JSON.stringify({
-      manual: [...S.manual],
-      slot: document.getElementById("slot").value,
-      polling: document.getElementById("polling").checked,
+      manual:[...S.manual], slot:document.getElementById("slot").value,
+      polling:document.getElementById("polling").checked,
     }));
   } catch(e) {}
 }
@@ -177,7 +193,8 @@ async function load() {
   try {
     const rk = await fetch("data/rankings.json", {cache:"no-store"}).then(r=>r.json());
     S.rankings = rk.players || [];
-    S.rankings.forEach(p => { if (p.espn_id) S.byEspn.set(p.espn_id, p); });
+    S.rankings.forEach(p => { if (p.espn_id) S.byEspn.set(p.espn_id, p);
+                              if (p.sleeper_id) S.bySleeper.set(p.sleeper_id, p); });
     document.getElementById("genMeta").textContent =
       `· ${rk.count} players · ${rk.scoring} · built ${new Date(rk.generatedAt).toLocaleString()}`;
   } catch(e) {
@@ -189,6 +206,7 @@ async function load() {
   if (S.settings?.starters) computeVOR();
   render();
   startPolling();
+  refreshInjuries();   // pull fresh injury status on open (non-blocking)
 }
 
 // ---------- helpers ----------
@@ -199,23 +217,44 @@ function currentPickNo() {
 }
 const teamName = id => (S.settings?.teams || []).find(t=>t.id===id)?.name || (id!=null?`Team ${id}`:"?");
 
-// ---------- VOR (uses your real league settings) ----------
+// ---------- VOR (offense/DST only; uses your league settings) ----------
 function computeVOR() {
   const st = S.settings, teams = teamCount();
   const withPts = S.rankings.filter(p => p.proj_pts != null);
   if (!withPts.length) return;
   const flexShare = (st.starters.FLEX || 0) * teams;
-  const flexPos = ["RB","WR","TE"];
   const baselines = {};
-  for (const pos of ["QB","RB","WR","TE","K","DST"]) {
+  // replacement = last starter across the league at each position (incl. the DP slot)
+  for (const pos of ["QB","RB","WR","TE","K","DST","DP"]) {
     let slots = (st.starters[pos] || 0) * teams;
-    if (flexPos.includes(pos)) slots += Math.floor(flexShare / flexPos.length);
+    if (OFF_FLEX.includes(pos)) slots += Math.floor(flexShare / OFF_FLEX.length);
     const pool = withPts.filter(p=>p.pos===pos).sort((a,b)=>b.proj_pts-a.proj_pts);
     if (pool.length && slots > 0) baselines[pos] = pool[Math.min(slots,pool.length)-1].proj_pts;
   }
   for (const p of withPts) {
     const b = baselines[p.pos];
     p.vor = (b!=null) ? Math.round(p.proj_pts - b) : null;
+  }
+}
+
+// ---------- live injury overlay (Sleeper) ----------
+const setInj = t => { document.getElementById("injInfo").innerHTML =
+  `<small class="meta">injuries: ${t}</small> <button class="link" id="refreshInj">refresh</button>`; };
+async function refreshInjuries() {
+  setInj("updating…");
+  try {
+    const data = await fetch("https://api.sleeper.app/v1/players/nfl", {cache:"no-store"}).then(r=>r.json());
+    for (const p of S.rankings) {
+      const s = data[p.sleeper_id];
+      if (!s) continue;
+      p.inj_status = s.injury_status || null;
+      p.status = (s.status && s.status !== "Active") ? s.status : null;
+    }
+    S.injAt = new Date();
+    setInj("updated " + S.injAt.toLocaleTimeString());
+    render();
+  } catch(e) {
+    setInj('<span style="color:var(--red)">blocked — using build snapshot</span>');
   }
 }
 
@@ -235,8 +274,7 @@ function startPolling() {
   tick();
   S.pollTimer = setInterval(tick, 5000);
 }
-const setConn = ok => { const el=document.getElementById("conn");
-  el.className = "dot " + (ok?"ok":"err"); };
+const setConn = ok => { document.getElementById("conn").className = "dot " + (ok?"ok":"err"); };
 
 // ---------- draft math ----------
 function myPicks() {
@@ -245,15 +283,17 @@ function myPicks() {
 }
 function rosterNeeds() {
   const st = S.settings; if (!st?.starters) return {};
-  const need = {...st.starters};
   const counts = {};
   myPicks().forEach(pk => { const p=S.byEspn.get(pk.espn_id); if(p) counts[p.pos]=(counts[p.pos]||0)+1; });
   const out = {};
-  for (const pos of ["QB","RB","WR","TE","K","DST"]) {
-    const left = (need[pos]||0) - Math.min(counts[pos]||0, need[pos]||0);
+  // fixed positional needs (everything except FLEX): QB, RB, WR, TE, K, DST, DP, OP...
+  for (const pos of Object.keys(st.starters)) {
+    if (pos === "FLEX") continue;
+    const left = (st.starters[pos]||0) - Math.min(counts[pos]||0, st.starters[pos]||0);
     if (left > 0) out[pos] = left;
   }
-  const surplus = ["RB","WR","TE"].reduce((a,pos)=>a+Math.max(0,(counts[pos]||0)-(st.starters[pos]||0)),0);
+  // FLEX absorbs RB/WR/TE surplus
+  const surplus = OFF_FLEX.reduce((a,pos)=>a+Math.max(0,(counts[pos]||0)-(st.starters[pos]||0)),0);
   const flexLeft = Math.max(0,(st.starters.FLEX||0)-surplus);
   if (flexLeft>0) out.FLEX = flexLeft;
   return out;
@@ -266,7 +306,6 @@ function mySlot() {
     return st.draftOrder.indexOf(st.myTeamId)+1;
   return null;
 }
-// team id on the clock for a given overall pick (snake). null if order unknown.
 function onClockOwnerId(cp) {
   const st = S.settings, n = teamCount();
   if (!st?.draftOrder?.length) return null;
@@ -278,11 +317,7 @@ function onClockIsMe(cp) {
   const st = S.settings, n = teamCount(), slot = mySlot();
   const owner = onClockOwnerId(cp);
   if (owner != null) return owner === st.myTeamId;
-  if (slot) {
-    let s = ((cp-1)%n)+1; const rnd=Math.floor((cp-1)/n);
-    if (rnd%2) s = n - s + 1;
-    return s === slot;
-  }
+  if (slot) { let s = ((cp-1)%n)+1; if (Math.floor((cp-1)/n)%2) s = n - s + 1; return s === slot; }
   return false;
 }
 function myNextPick(cp) {
@@ -307,8 +342,9 @@ function bestAvailable() {
   const score = p => {
     let s = p.value + (p.vor||0)*0.15;
     if (needPos.has(p.pos)) s += 6;
-    else if (flexOpen && ["RB","WR","TE"].includes(p.pos)) s += 3;
-    if (next && p.adp && p.adp < next) s += 4;   // likely gone before your next pick
+    else if (flexOpen && OFF_FLEX.includes(p.pos)) s += 3;
+    if (next && p.adp && p.adp < next) s += 4;                 // likely gone before your next pick
+    if (classifyInjury(p.status, p.inj_status).sev === "OUT") s -= 500;  // sink season-enders
     return s;
   };
   return avail.sort((a,b)=>score(b)-score(a)).slice(0,40);
@@ -316,26 +352,24 @@ function bestAvailable() {
 
 // ---------- render ----------
 function render() {
-  // banners
   let banner = "";
-  if (TEST) banner += `<div class="warn test"><strong>TEST LEAGUE MODE</strong> — pointed at your test league via <code>?test=1</code>. Remove <code>?test=1</code> from the URL for your real draft.</div>`;
+  if (TEST) banner += `<div class="warn test"><strong>TEST LEAGUE MODE</strong> — pointed at your test league via <code>?test=1</code>. Remove it for your real draft.</div>`;
   const dt = S.settings?.draftType;
   if (dt && !String(dt).toUpperCase().includes("SNAKE"))
-    banner += `<div class="warn">Draft type reads "<strong>${dt}</strong>", not snake — the on-the-clock math assumes a snake draft and may be off.</div>`;
+    banner += `<div class="warn">Draft type reads "<strong>${dt}</strong>", not snake — on-the-clock math assumes a snake draft and may be off.</div>`;
+  const un = S.settings?.unmappedSlots;
+  if (un && un.length)
+    banner += `<div class="warn">Unrecognized roster slot(s): ${un.map(u=>`#${u.slot}×${u.count}`).join(", ")} — tell me these IDs so needs stay accurate.</div>`;
   document.getElementById("banner").innerHTML = banner;
 
-  const cp = currentPickNo();
-  const n = teamCount();
-  const me = onClockIsMe(cp);
+  const cp = currentPickNo(), n = teamCount(), me = onClockIsMe(cp);
   document.getElementById("pickNo").textContent = "Pick " + cp;
-  document.getElementById("roundInfo").textContent =
-    `Round ${Math.floor((cp-1)/n)+1} · ${n} teams`;
+  document.getElementById("roundInfo").textContent = `Round ${Math.floor((cp-1)/n)+1} · ${n} teams`;
 
   const next = myNextPick(cp), until = (next!=null) ? next - cp : null;
   let clock;
-  if (me) {
-    clock = '<span class="onclock">▶ YOU\'RE ON THE CLOCK</span>';
-  } else {
+  if (me) clock = '<span class="onclock">▶ YOU\'RE ON THE CLOCK</span>';
+  else {
     const owner = onClockOwnerId(cp);
     const who = owner!=null ? `On the clock: ${teamName(owner)}` : "waiting…";
     const cd = (until!=null) ? ` · <span class="until">${until} pick${until===1?"":"s"} until you</span>` : "";
@@ -348,19 +382,23 @@ function render() {
   document.getElementById("needs").innerHTML =
     Object.keys(needs).length
       ? Object.entries(needs).map(([p,c])=>`<span>${p}×${c}</span>`).join("")
-      : (S.settings?.error ? `<span style="color:#f85149">settings error</span>` : `<span>roster set</span>`);
+      : (S.settings?.error ? `<span style="color:var(--red)">settings error</span>` : `<span>roster set</span>`);
 
   document.getElementById("manualInfo").innerHTML =
     S.manual.size ? `<small class="meta">${S.manual.size} manual</small> <button class="link" id="clearManual">clear</button>` : "";
 
   const rows = bestAvailable().map((p,i)=>{
+    const cls = classifyInjury(p.status, p.inj_status);
+    const injBadge = cls.sev==="OUT" ? `<span class="badge out">${cls.label}</span>`
+                   : cls.sev==="DTD" ? `<span class="badge dtd">${cls.label}</span>` : "";
+    const idpBadge = p.idp ? `<span class="badge ltd" title="limited data">IDP</span>` : "";
     const flags = [];
     if (p.spread>12) flags.push("split");
     if (p.outliers?.length) flags.push("outlier");
-    return `<tr>
+    return `<tr class="${cls.sev==="OUT"?"hurt":""}">
       <td class="num">${i+1}</td>
-      <td>${p.name}</td>
-      <td><span class="pos">${p.pos}</span></td>
+      <td>${p.name}${injBadge}${idpBadge}</td>
+      <td><span class="pos">${p.pos}</span>${p.idp&&p.dpos?`<span class="sub">${p.dpos}</span>`:""}</td>
       <td>${p.team||""}</td>
       <td class="num">${p.value.toFixed(0)}</td>
       <td class="num">${p.vor!=null?(p.vor>0?"+":"")+p.vor:"—"}</td>
@@ -392,6 +430,7 @@ document.getElementById("filters").onclick = e => {
     e.target.classList.add("active"); S.filter = e.target.dataset.pos; render();
   }
   if (e.target.id === "clearManual") { S.manual.clear(); saveState(); render(); }
+  if (e.target.id === "refreshInj") refreshInjuries();
 };
 document.getElementById("board").onclick = e => {
   if (e.target.dataset.sid) { S.manual.add(e.target.dataset.sid); saveState(); render(); }

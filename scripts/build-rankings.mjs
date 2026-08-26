@@ -155,11 +155,16 @@ async function sleeperProj(idx){
 
 // ---------------- league scoring ----------------
 function scoreLeague(players){
-  let idpN=0, splitN=0, offN=0, sampleKeys=null;
+  let idpN=0, splitN=0, offRaw=0, offFb=0;
+  let soloSeen=false, astSeen=false, combSeen=false;
+  const idpKeys=new Set();
   for (const p of players){
     const s=p.projStats; if(!s) continue;
     if (p.idp){
-      if (!sampleKeys) sampleKeys=Object.keys(s).filter(k=>k.startsWith("idp")||/tkl|sack|def/.test(k));
+      for (const k of Object.keys(s)) if(/idp|tkl|sack|int|ff|fum|pass_def|safe|blk/i.test(k)) idpKeys.add(k);
+      if (has(s,"idp_tkl_solo")) soloSeen=true;
+      if (has(s,"idp_tkl_ast"))  astSeen=true;
+      if (has(s,"idp_tkl"))      combSeen=true;
       let pts=0;
       for (const [k,w] of Object.entries(SC_IDP)) pts += val(s,k)*w;
       if (has(s,"idp_tkl_solo") || has(s,"idp_tkl_ast")){
@@ -170,16 +175,17 @@ function scoreLeague(players){
       }
       if (pts>0){ p.proj_pts=Number(pts.toFixed(1)); idpN++; }
     } else if (OFF_SCORED.has(p.pos)){
-      let pts=0;
-      for (const [k,w] of Object.entries(SC_OFF)) pts += val(s,k)*w;
+      let pts=0, raw=false;
+      for (const [k,w] of Object.entries(SC_OFF)){ const v=val(s,k); if(v) raw=true; pts+=v*w; }
       if (pts<=0 && typeof s.pts_ppr==="number") pts=s.pts_ppr;   // fallback if raw lines absent
-      if (pts>0) p.proj_pts=Number(pts.toFixed(1));
+      if (pts>0){ p.proj_pts=Number(pts.toFixed(1)); if(raw) offRaw++; else offFb++; }
     }
     // K / DST: consensus ranking — no league scoring
   }
-  console.log(`[score] offense scored: ${offN||players.filter(p=>OFF_SCORED.has(p.pos)&&p.proj_pts!=null).length}, IDP scored: ${idpN}` +
-              (splitN?`, tackle split estimated for ${splitN}`:``));
-  if (sampleKeys) console.log(`[score] IDP stat keys seen: ${sampleKeys.join(", ") || "(none — IDP projections missing)"}`);
+  console.log(`[score] offense: raw-scored ${offRaw}, pts_ppr-fallback ${offFb}`);
+  console.log(`[score] IDP scored: ${idpN}${splitN?`, tackle-split estimated for ${splitN}`:``}`);
+  console.log(`[score] tackle fields present — solo:${soloSeen} assist:${astSeen} combined:${combSeen}`);
+  console.log(`[score] IDP stat keys: ${[...idpKeys].slice(0,40).join(", ")||"(none)"}`);
 }
 
 // ---------------- blend (offense/DST/K market value) ----------------
@@ -209,7 +215,7 @@ function blend(players){
 function rankIDP(players){
   const idps=players.filter(p=>p.idp); if(!idps.length) return;
   const withProj=idps.filter(p=>p.proj_pts!=null);
-  const useProj = withProj.length>10 && withProj.length>=idps.length*0.4;
+  const useProj = withProj.length > 30;   // 459 scored defenders is plenty; the pool has thousands of irrelevant ones
   idps.sort((a,b)=> useProj ? (b.proj_pts||0)-(a.proj_pts||0)
                             : (a.search_rank??1e9)-(b.search_rank??1e9));
   idps.forEach((p,i)=>{ p.value=Math.max(1, 50 - i*0.5); p.idpRank=i+1; });

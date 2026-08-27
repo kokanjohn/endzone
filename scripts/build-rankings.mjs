@@ -161,6 +161,9 @@ function scoreLeague(players){
   for (const p of players){
     const s=p.projStats; if(!s) continue;
     if (p.idp){
+      const av = (typeof s.adp_idp_1qb==="number") ? s.adp_idp_1qb
+               : (typeof s.adp_idp==="number") ? s.adp_idp : null;
+      if (av!=null && av>0) p.idpAdp = av;
       for (const k of Object.keys(s)) if(/idp|tkl|sack|int|ff|fum|pass_def|safe|blk/i.test(k)) idpKeys.add(k);
       if (has(s,"idp_tkl_solo")) soloSeen=true;
       if (has(s,"idp_tkl_ast"))  astSeen=true;
@@ -225,9 +228,17 @@ function rankIDP(players){
 function tiers(players){
   const byPos={}; players.forEach(p=>(byPos[p.pos]??=[]).push(p));
   for (const pos in byPos){
-    const arr=byPos[pos].filter(p=>p.value>0).sort((a,b)=>b.value-a.value);
+    // tier by projected points: a new tier starts at a >5% drop-off (a real cliff)
+    const scored=byPos[pos].filter(p=>p.proj_pts!=null).sort((a,b)=>b.proj_pts-a.proj_pts);
     let tier=1;
-    for (let i=0;i<arr.length;i++){ if(i>0 && arr[i-1].value-arr[i].value>6) tier++; arr[i].tier=tier; }
+    scored.forEach((p,i)=>{
+      if (i>0){ const hi=scored[i-1].proj_pts; if (hi>0 && (hi-p.proj_pts) > hi*0.05) tier++; }
+      p.tier=tier;
+    });
+    // positions without projections (DST/K) tier on consensus value
+    const rest=byPos[pos].filter(p=>p.proj_pts==null && p.value>0).sort((a,b)=>b.value-a.value);
+    let t=1;
+    rest.forEach((p,i)=>{ if (i>0 && rest[i-1].value-p.value>2) t++; p.tier=t; });
   }
 }
 
@@ -244,7 +255,7 @@ async function main(){
   const shape = p => ({
     name:p.name, pos:p.pos, team:p.team, sleeper_id:p.sleeper_id, espn_id:p.espn_id,
     value:Number(p.value.toFixed(1)), spread:Number((p.spread||0).toFixed(1)),
-    proj_pts:p.proj_pts, tier:p.tier||null, adp:p.adp.ffc??null,
+    proj_pts:p.proj_pts, tier:p.tier||null, adp:p.adp.ffc ?? p.idpAdp ?? null,
     sources:Object.keys(p.ranks), outliers:p.outliers||[],
     ...(p.idp?{idp:true,dpos:p.dpos}:{}),
     ...(p.injStatus?{inj_status:p.injStatus}:{}),

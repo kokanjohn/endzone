@@ -347,7 +347,7 @@ function bestAvailable() {
     if (classifyInjury(p.status, p.inj_status).sev === "OUT") s -= 500;  // sink season-enders
     return s;
   };
-  return avail.sort((a,b)=>score(b)-score(a)).slice(0,40);
+  return avail.sort((a,b)=>score(b)-score(a)).slice(0,300);
 }
 
 // ---------- render ----------
@@ -391,14 +391,14 @@ function render() {
     const cls = classifyInjury(p.status, p.inj_status);
     const injBadge = cls.sev==="OUT" ? `<span class="badge out">${cls.label}</span>`
                    : cls.sev==="DTD" ? `<span class="badge dtd">${cls.label}</span>` : "";
-    const idpBadge = p.idp ? `<span class="badge ltd" title="limited data">IDP</span>` : "";
     const flags = [];
-    if (p.spread>12) flags.push("split");
-    if (p.outliers?.length) flags.push("outlier");
+    if (p.spread>12) flags.push(`<span title="ranking sources disagree on this player">mixed</span>`);
+    if (p.outliers?.length) flags.push(`<span title="an outlier source was dropped from the blend">outlier</span>`);
+    const posLabel = p.idp ? (p.dpos || "DP") : p.pos;   // show the real defensive position
     return `<tr class="${cls.sev==="OUT"?"hurt":""}">
       <td class="num">${i+1}</td>
-      <td>${p.name}${injBadge}${idpBadge}</td>
-      <td><span class="pos">${p.pos}</span>${p.idp&&p.dpos?`<span class="sub">${p.dpos}</span>`:""}</td>
+      <td>${p.name}${injBadge}</td>
+      <td><span class="pos">${posLabel}</span>${p.idp?`<span class="sub">DP</span>`:""}</td>
       <td>${p.team||""}</td>
       <td class="num">${p.value.toFixed(0)}</td>
       <td class="num">${p.vor!=null?(p.vor>0?"+":"")+p.vor:"—"}</td>

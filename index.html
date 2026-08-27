@@ -46,6 +46,7 @@
   .badge.out { background:#4a1518; color:#ff9a9a; }
   .badge.dtd { background:#3a2a12; color:#f0c98a; }
   .badge.ltd { background:#20262e; color:var(--muted); }
+  .badge.steal { background:#123020; color:#57d977; letter-spacing:-1px; }
   .sub { font-size:11px; color:var(--muted); margin-left:4px; }
   .mark { background:none; border:1px solid var(--line); color:var(--muted);
           border-radius:5px; padding:2px 7px; cursor:pointer; font-size:12px; }
@@ -161,6 +162,7 @@ const POS_COLORS = {
   K:"#a371f7", DST:"#d0a15f", DP:"#e668b3"
 };
 const posColor = p => POS_COLORS[p.idp ? "DP" : p.pos] || "#8b98a5";
+const STEAL_SMALL = 10, STEAL_BIG = 25;   // rank-gap thresholds for the ▲ / ▲▲ steal badge (Phase-3 knobs)
 const S = { rankings:[], byEspn:new Map(), bySleeper:new Map(), settings:null,
             drafted:new Map(), manual:new Set(), filter:"ALL", pollTimer:null, injAt:null };
 
@@ -208,7 +210,7 @@ async function load() {
   }
   try { S.settings = await fetch(api("/api/settings")).then(r=>r.json()); }
   catch(e) { S.settings = { error:String(e) }; }
-  if (S.settings?.starters) computeVOR();
+  if (S.settings?.starters) { computeVOR(); computeEdge(); }
   render();
   startPolling();
   refreshInjuries();   // pull fresh injury status on open (non-blocking)
@@ -240,6 +242,24 @@ function computeVOR() {
     const b = baselines[p.pos];
     p.vor = (b!=null) ? Math.round(p.proj_pts - b) : null;
   }
+}
+
+// ---------- steal edge: value rank vs market rank, computed within each market ----------
+function rankEdge(arr, market, marketDir, value){
+  if (arr.length < 5) return;
+  [...arr].sort((a,b)=> marketDir==="asc" ? market(a)-market(b) : market(b)-market(a))
+          .forEach((p,i)=> p._mRank = i+1);
+  [...arr].sort((a,b)=> value(b)-value(a)).forEach((p,i)=> p._vRank = i+1);
+  arr.forEach(p => p.edge = p._mRank - p._vRank);   // positive = market drafts them later than their value
+}
+function computeEdge(){
+  S.rankings.forEach(p => p.edge = undefined);
+  // offense: market = VAL (higher=earlier), value = VOR
+  rankEdge(S.rankings.filter(p => !p.idp && ["QB","RB","WR","TE"].includes(p.pos) && p.vor!=null && p.value>0),
+           p=>p.value, "desc", p=>p.vor);
+  // IDP: market = Sleeper IDP ADP (lower=earlier), value = VOR
+  rankEdge(S.rankings.filter(p => p.idp && p.vor!=null && p.adp!=null),
+           p=>p.adp, "asc", p=>p.vor);
 }
 
 // ---------- live injury overlay (Sleeper) ----------
@@ -396,6 +416,8 @@ function render() {
     const cls = classifyInjury(p.status, p.inj_status);
     const injBadge = cls.sev==="OUT" ? `<span class="badge out">${cls.label}</span>`
                    : cls.sev==="DTD" ? `<span class="badge dtd">${cls.label}</span>` : "";
+    const stealBadge = p.edge>=STEAL_BIG ? `<span class="badge steal" title="strong value in your scoring (+${p.edge})">▲▲</span>`
+                     : p.edge>=STEAL_SMALL ? `<span class="badge steal" title="undervalued in your scoring (+${p.edge})">▲</span>` : "";
     const flags = [];
     if (p.spread>12) flags.push(`<span title="ranking sources disagree on this player">mixed</span>`);
     if (p.outliers?.length) flags.push(`<span title="an outlier source was dropped from the blend">outlier</span>`);
@@ -403,7 +425,7 @@ function render() {
     const c = posColor(p);
     return `<tr class="${cls.sev==="OUT"?"hurt":""}" style="background:${c}2b">
       <td class="num">${i+1}</td>
-      <td>${p.name}${injBadge}</td>
+      <td>${p.name}${stealBadge}${injBadge}</td>
       <td><span class="pos" style="color:${c}">${posLabel}</span>${p.idp?`<span class="sub">DP</span>`:""}</td>
       <td>${p.team||""}</td>
       <td class="num">${p.value.toFixed(0)}</td>

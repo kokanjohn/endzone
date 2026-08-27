@@ -33,8 +33,8 @@
   .needs span, .filters button { display:inline-block; padding:3px 9px; margin:2px;
             border-radius:999px; font-size:12px; }
   .needs span { background:#20262e; color:var(--muted); }
-  .filters button { background:#20262e; color:var(--text); border:1px solid var(--line); cursor:pointer; }
-  .filters button.active { background:var(--you); border-color:var(--you); }
+  .filters button { background:#20262e; color:var(--c,var(--text)); border:1px solid var(--line); cursor:pointer; }
+  .filters button.active { background:color-mix(in srgb, var(--c,var(--you)) 30%, #20262e); border-color:var(--c,var(--you)); color:var(--text); font-weight:700; }
   table { width:100%; border-collapse:collapse; }
   th,td { text-align:left; padding:7px 8px; border-bottom:1px solid var(--line); }
   th { color:var(--muted); font-weight:600; font-size:12px; text-transform:uppercase; letter-spacing:.03em; }
@@ -156,6 +156,11 @@ const api = p => (API_BASE || "") + p + (TEST ? (p.includes("?") ? "&" : "?") + 
 const STORE_KEY = "endzone:" + (TEST ? "test" : "live");
 
 const OFF_FLEX = ["RB","WR","TE"];
+const POS_COLORS = {
+  QB:"#ef5b5b", RB:"#3fb950", WR:"#4aa3ff", TE:"#f0883e",
+  K:"#a371f7", DST:"#d0a15f", DP:"#e668b3"
+};
+const posColor = p => POS_COLORS[p.idp ? "DP" : p.pos] || "#8b98a5";
 const S = { rankings:[], byEspn:new Map(), bySleeper:new Map(), settings:null,
             drafted:new Map(), manual:new Set(), filter:"ALL", pollTimer:null, injAt:null };
 
@@ -395,10 +400,11 @@ function render() {
     if (p.spread>12) flags.push(`<span title="ranking sources disagree on this player">mixed</span>`);
     if (p.outliers?.length) flags.push(`<span title="an outlier source was dropped from the blend">outlier</span>`);
     const posLabel = p.idp ? (p.dpos || "DP") : p.pos;   // show the real defensive position
-    return `<tr class="${cls.sev==="OUT"?"hurt":""}">
+    const c = posColor(p);
+    return `<tr class="${cls.sev==="OUT"?"hurt":""}" style="background:${c}2b">
       <td class="num">${i+1}</td>
       <td>${p.name}${injBadge}</td>
-      <td><span class="pos">${posLabel}</span>${p.idp?`<span class="sub">DP</span>`:""}</td>
+      <td><span class="pos" style="color:${c}">${posLabel}</span>${p.idp?`<span class="sub">DP</span>`:""}</td>
       <td>${p.team||""}</td>
       <td class="num">${p.value.toFixed(0)}</td>
       <td class="num">${p.vor!=null?(p.vor>0?"+":"")+p.vor:"—"}</td>
@@ -437,6 +443,10 @@ document.getElementById("board").onclick = e => {
 };
 document.getElementById("slot").onchange = () => { saveState(); render(); };
 document.getElementById("polling").onchange = saveState;
+
+document.querySelectorAll("#filters button[data-pos]").forEach(b => {
+  const c = POS_COLORS[b.dataset.pos]; if (c) b.style.setProperty("--c", c);
+});
 
 load();
 </script>

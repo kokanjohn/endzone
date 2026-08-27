@@ -225,20 +225,24 @@ function rankIDP(players){
   console.log(`[idp] ranked ${idps.length} defenders by ${useProj?"league projection":"prominence (no IDP projections)"}`);
 }
 
+// Tiers = the N largest relative drop-offs within a position become tier breaks.
+// This is scale-free and never collapses to one tier on smooth projection curves.
+function assignTiers(arr, metric, N){
+  if (!arr.length) return;
+  const gaps=[];
+  for (let i=1;i<arr.length;i++){ gaps.push({i, g: metric(arr[i-1]) - metric(arr[i])}); }
+  const cuts=new Set(gaps.sort((a,b)=>b.g-a.g).slice(0, Math.max(0,N-1)).map(x=>x.i));
+  let tier=1;
+  arr.forEach((p,i)=>{ if (cuts.has(i)) tier++; p.tier=tier; });
+}
 function tiers(players){
+  const N=10;   // target tiers per position — a Phase-3 tuning knob
   const byPos={}; players.forEach(p=>(byPos[p.pos]??=[]).push(p));
   for (const pos in byPos){
-    // tier by projected points: a new tier starts at a >5% drop-off (a real cliff)
     const scored=byPos[pos].filter(p=>p.proj_pts!=null).sort((a,b)=>b.proj_pts-a.proj_pts);
-    let tier=1;
-    scored.forEach((p,i)=>{
-      if (i>0){ const hi=scored[i-1].proj_pts; if (hi>0 && (hi-p.proj_pts) > hi*0.05) tier++; }
-      p.tier=tier;
-    });
-    // positions without projections (DST/K) tier on consensus value
+    assignTiers(scored, p=>p.proj_pts, N);                       // offense + IDP by league points
     const rest=byPos[pos].filter(p=>p.proj_pts==null && p.value>0).sort((a,b)=>b.value-a.value);
-    let t=1;
-    rest.forEach((p,i)=>{ if (i>0 && rest[i-1].value-p.value>2) t++; p.tier=t; });
+    assignTiers(rest, p=>p.value, N);                           // DST + K by consensus value
   }
 }
 

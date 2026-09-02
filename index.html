@@ -162,6 +162,23 @@ const POS_COLORS = {
   K:"#a371f7", DST:"#d0a15f", DP:"#e668b3"
 };
 const posColor = p => POS_COLORS[p.idp ? "DP" : p.pos] || "#8b98a5";
+
+// ---------- team-strength heat map (2026 preseason consensus win totals) ----------
+// Edit these lists as the season/your read on teams changes — just move an abbreviation
+// to a different tier array. No other code needs to change.
+const TEAM_TIERS = {
+  blue:   ["BAL","BUF","LAR","SEA","SF","DET","GB","KC","LAC","PHI"],          // ~10.5+ proj. wins — contenders
+  green:  ["CHI","CIN","DEN","HOU","JAX","NE","DAL","IND","MIN","PIT","TB"],   // ~8.5-9.5 — above average
+  yellow: ["NO","WAS"],                                                        // ~7.5 — below average
+  red:    ["ARI","MIA","LV","NYJ","NYG","TEN","CLE","CAR","ATL"],              // ~4.5-6.5 — bottom of the league
+};
+const TIER_COLORS = { blue:"#4aa3ff", green:"#3fb950", yellow:"#d4b106", red:"#ef5b5b" };
+const TEAM_TIER_LOOKUP = (() => {
+  const m = {};
+  for (const [tier, teams] of Object.entries(TEAM_TIERS)) for (const t of teams) m[t] = tier;
+  return m;
+})();
+const teamColor = team => TIER_COLORS[TEAM_TIER_LOOKUP[team]] || null;   // null = no data, render plain
 const STEAL_SMALL = 10, STEAL_BIG = 25;   // rank-gap thresholds for the ▲ / ▲▲ steal badge (Phase-3 knobs)
 const S = { rankings:[], byEspn:new Map(), bySleeper:new Map(), settings:null,
             drafted:new Map(), manual:new Set(), filter:"ALL", pollTimer:null, injAt:null };
@@ -427,7 +444,7 @@ function render() {
       <td class="num">${i+1}</td>
       <td>${p.name}${stealBadge}${injBadge}</td>
       <td><span class="pos" style="color:${c}">${posLabel}</span>${p.idp?`<span class="sub">DP</span>`:""}</td>
-      <td>${p.team||""}</td>
+      <td>${p.team?`<span style="color:${teamColor(p.team)||"inherit"};font-weight:${teamColor(p.team)?"700":"400"}">${p.team}</span>`:""}</td>
       <td class="num">${p.value.toFixed(0)}</td>
       <td class="num">${p.vor!=null?(p.vor>0?"+":"")+p.vor:"—"}</td>
       <td class="num">${p.adp!=null?p.adp.toFixed(1):"—"}</td>

@@ -78,27 +78,45 @@ async function getJSON(url,opts){ const r=await fetch(url,opts);
 // ---------------- Sleeper master ----------------
 async function sleeperMaster(){
   const data = await getJSON("https://api.sleeper.app/v1/players/nfl");
-  const players=[], byName=new Map(), bySleeper=new Map(), byTeamDST=new Map();
+  const players=[], byName=new Map(), bySleeper=new Map(), bySleeperAll=new Map(), byTeamDST=new Map();
+  let dualCount=0;
   for (const [sid,pl] of Object.entries(data)){
-    const raw = normPos((pl.fantasy_positions?.[0]) || pl.position || "");
-    let pos,dpos=null,idp=false;
-    if (raw==="DST") pos="DST";
-    else if (OFF.has(raw)) pos=raw;
-    else if (IDP.has(raw)){ pos="DP"; dpos=raw; idp=true; }
-    else continue;
-    const name = pos==="DST" ? `${pl.team||sid} DST`
-      : (pl.full_name || `${pl.first_name||""} ${pl.last_name||""}`.trim());
-    if (!name) continue;
-    const p={ sleeper_id:sid, espn_id: pl.espn_id?String(pl.espn_id):null,
-      name,pos,dpos,idp, team:pl.team||"",
-      search_rank:(typeof pl.search_rank==="number")?pl.search_rank:null,
-      injStatus:pl.injury_status||null, status:pl.status||null,
-      ranks:{}, adp:{}, projStats:null, proj_pts:null };
-    players.push(p); bySleeper.set(sid,p);
-    if (pos==="DST") byTeamDST.set((pl.team||sid).toUpperCase(),p);
-    else byName.set(`${normName(name)}|${pos==="DP"?dpos:pos}`,p);
+    // Some players are eligible on BOTH sides (e.g. Travis Hunter: WR + DB) — Sleeper lists every
+    // eligible tag in fantasy_positions. Using only [0] silently drops the other side entirely,
+    // so scan the whole array and build a separate row for each side the player qualifies for.
+    const tags = (pl.fantasy_positions?.length ? pl.fantasy_positions : [pl.position]).filter(Boolean).map(normPos);
+    if (!tags.length) continue;
+    const isDST = tags.includes("DST");
+    const offTag = tags.find(t=>OFF.has(t));
+    const idpTag = tags.find(t=>IDP.has(t));
+    const baseName = pl.full_name || `${pl.first_name||""} ${pl.last_name||""}`.trim();
+    const rowSpecs = [];
+    if (isDST) rowSpecs.push({ pos:"DST", dpos:null, idp:false, name:`${pl.team||sid} DST` });
+    else {
+      if (offTag) rowSpecs.push({ pos:offTag, dpos:null, idp:false, name:baseName });
+      if (idpTag) rowSpecs.push({ pos:"DP", dpos:idpTag, idp:true, name:baseName });
+    }
+    if (!rowSpecs.length) continue;
+    if (rowSpecs.length>1) dualCount++;
+    const group=[];
+    for (const spec of rowSpecs){
+      if (!spec.name) continue;
+      const p={ sleeper_id:sid, espn_id: pl.espn_id?String(pl.espn_id):null,
+        name:spec.name, pos:spec.pos, dpos:spec.dpos, idp:spec.idp, team:pl.team||"",
+        search_rank:(typeof pl.search_rank==="number")?pl.search_rank:null,
+        injStatus:pl.injury_status||null, status:pl.status||null,
+        ranks:{}, adp:{}, projStats:null, proj_pts:null };
+      players.push(p); group.push(p);
+      if (spec.pos==="DST"){ byTeamDST.set((pl.team||sid).toUpperCase(),p); bySleeper.set(sid,p); }
+      else {
+        byName.set(`${normName(spec.name)}|${spec.pos==="DP"?spec.dpos:spec.pos}`,p);
+        if (!bySleeper.has(sid)) bySleeper.set(sid,p);   // offense row wins the singular lookup (FantasyCalc/ADP are offense-only)
+      }
+    }
+    if (group.length) bySleeperAll.set(sid, group);
   }
-  return { players, byName, bySleeper, byTeamDST };
+  console.log(`[sleeper] dual offense+IDP eligible: ${dualCount}`);
+  return { players, byName, bySleeper, bySleeperAll, byTeamDST };
 }
 
 // ---------------- FFC ADP ----------------
@@ -145,8 +163,8 @@ async function sleeperProj(idx){
       if (!Array.isArray(data)){ console.error("[proj] unexpected shape for",g[0]); continue; }
       let n=0;
       for (const row of data){
-        const p = idx.bySleeper.get(String(row.player_id));
-        if (p && row.stats){ p.projStats = row.stats; n++; }
+        const group = idx.bySleeperAll.get(String(row.player_id));
+        if (group && row.stats){ group.forEach(p=>p.projStats = row.stats); n++; }
       }
       console.log(`[proj] ${n} stat lines for [${g.join(",")}]`);
     }catch(e){ console.error(`[proj] group ${g[0]} failed —`, e.message); }
@@ -219,10 +237,20 @@ function rankIDP(players){
   const idps=players.filter(p=>p.idp); if(!idps.length) return;
   const withProj=idps.filter(p=>p.proj_pts!=null);
   const useProj = withProj.length > 30;   // 459 scored defenders is plenty; the pool has thousands of irrelevant ones
-  idps.sort((a,b)=> useProj ? (b.proj_pts||0)-(a.proj_pts||0)
-                            : (a.search_rank??1e9)-(b.search_rank??1e9));
+  idps.sort((a,b)=>{
+    if (!useProj) return (a.search_rank??1e9)-(b.search_rank??1e9);
+    const ap=a.proj_pts, bp=b.proj_pts;
+    if (ap!=null && bp!=null) return bp-ap;
+    if (ap!=null) return -1;
+    if (bp!=null) return 1;
+    // neither has a projection — a data gap (recent signing/trade/injury), not necessarily a scrub.
+    // fall back to search_rank so a known player doesn't get buried under noise.
+    return (a.search_rank??1e9)-(b.search_rank??1e9);
+  });
   idps.forEach((p,i)=>{ p.value=Math.max(1, 50 - i*0.5); p.idpRank=i+1; });
-  console.log(`[idp] ranked ${idps.length} defenders by ${useProj?"league projection":"prominence (no IDP projections)"}`);
+  const missing = idps.filter(p=>p.proj_pts==null && (p.search_rank??1e9)<250);
+  if (missing.length) console.log(`[idp] WARNING — no projection for ${missing.length} prominent defender(s), ranked by search_rank instead: ${missing.map(p=>p.name).join(", ")}`);
+  console.log(`[idp] ranked ${idps.length} defenders by ${useProj?"league projection (search_rank fallback when unprojected)":"prominence (no IDP projections)"}`);
 }
 
 // Tiers = the N largest relative drop-offs within a position become tier breaks.
@@ -267,7 +295,7 @@ async function main(){
   });
 
   const off = idx.players.filter(p=>!p.idp && p.value>0).sort((a,b)=>b.value-a.value).slice(0,360);
-  const idp = idx.players.filter(p=>p.idp && p.value>0).sort((a,b)=>a.idpRank-b.idpRank).slice(0,60);
+  const idp = idx.players.filter(p=>p.idp && p.value>0).sort((a,b)=>a.idpRank-b.idpRank).slice(0,150);
   const out = [...off, ...idp].map(shape);
 
   const nDST=out.filter(p=>p.pos==="DST").length, nIDP=out.filter(p=>p.idp).length;

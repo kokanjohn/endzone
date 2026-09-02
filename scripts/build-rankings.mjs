@@ -232,25 +232,30 @@ function blend(players){
   }
 }
 
-// IDP ranked by league-scored projection (search_rank only as last resort)
+// IDP ranked by league-scored projection, with a guaranteed slot for known players
+// who lack a defensive-stat projection (part-time/two-way players, recent signings, etc.)
+// so they can't be crowded out by a large pool of thinly-projected bench defenders.
+const IDP_PROMINENCE = 400;   // search_rank cutoff for "this is a real NFL player" fallback
 function rankIDP(players){
-  const idps=players.filter(p=>p.idp); if(!idps.length) return;
-  const withProj=idps.filter(p=>p.proj_pts!=null);
-  const useProj = withProj.length > 30;   // 459 scored defenders is plenty; the pool has thousands of irrelevant ones
-  idps.sort((a,b)=>{
-    if (!useProj) return (a.search_rank??1e9)-(b.search_rank??1e9);
-    const ap=a.proj_pts, bp=b.proj_pts;
-    if (ap!=null && bp!=null) return bp-ap;
-    if (ap!=null) return -1;
-    if (bp!=null) return 1;
-    // neither has a projection — a data gap (recent signing/trade/injury), not necessarily a scrub.
-    // fall back to search_rank so a known player doesn't get buried under noise.
-    return (a.search_rank??1e9)-(b.search_rank??1e9);
-  });
-  idps.forEach((p,i)=>{ p.value=Math.max(1, 50 - i*0.5); p.idpRank=i+1; });
-  const missing = idps.filter(p=>p.proj_pts==null && (p.search_rank??1e9)<250);
-  if (missing.length) console.log(`[idp] WARNING — no projection for ${missing.length} prominent defender(s), ranked by search_rank instead: ${missing.map(p=>p.name).join(", ")}`);
-  console.log(`[idp] ranked ${idps.length} defenders by ${useProj?"league projection (search_rank fallback when unprojected)":"prominence (no IDP projections)"}`);
+  const idps=players.filter(p=>p.idp); if(!idps.length) return 0;
+  const projected = idps.filter(p=>p.proj_pts!=null).sort((a,b)=>b.proj_pts-a.proj_pts);
+  const useProj = projected.length > 30;   // 459+ scored defenders is plenty; the pool has thousands of irrelevant ones
+  let ordered;
+  if (useProj){
+    const rest = idps.filter(p=>p.proj_pts==null);
+    const prominent = rest.filter(p=>(p.search_rank??1e9) < IDP_PROMINENCE)
+      .sort((a,b)=>(a.search_rank??1e9)-(b.search_rank??1e9));
+    const longTail = rest.filter(p=>(p.search_rank??1e9) >= IDP_PROMINENCE)
+      .sort((a,b)=>(a.search_rank??1e9)-(b.search_rank??1e9));
+    ordered = [...projected, ...prominent, ...longTail];
+    if (prominent.length) console.log(`[idp] WARNING — no projection for ${prominent.length} prominent defender(s), guaranteed a slot by search_rank instead: ${prominent.map(p=>p.name).join(", ")}`);
+  } else {
+    ordered = idps.slice().sort((a,b)=>(a.search_rank??1e9)-(b.search_rank??1e9));
+  }
+  ordered.forEach((p,i)=>{ p.value=Math.max(1, 50 - i*0.5); p.idpRank=i+1; });
+  console.log(`[idp] ranked ${ordered.length} defenders by ${useProj?"league projection (search_rank fallback when unprojected)":"prominence (no IDP projections)"}`);
+  // caller needs this to keep the output cap from re-introducing the same bug
+  return useProj ? projected.length + idps.filter(p=>p.proj_pts==null && (p.search_rank??1e9)<IDP_PROMINENCE).length : ordered.length;
 }
 
 // Tiers = the N largest relative drop-offs within a position become tier breaks.
@@ -281,7 +286,7 @@ async function main(){
   await sleeperProj(idx);
   scoreLeague(idx.players);
   blend(idx.players);
-  rankIDP(idx.players);
+  const idpGuaranteed = rankIDP(idx.players);
   tiers(idx.players);
 
   const shape = p => ({
@@ -295,7 +300,8 @@ async function main(){
   });
 
   const off = idx.players.filter(p=>!p.idp && p.value>0).sort((a,b)=>b.value-a.value).slice(0,360);
-  const idp = idx.players.filter(p=>p.idp && p.value>0).sort((a,b)=>a.idpRank-b.idpRank).slice(0,150);
+  const idpCap = Math.max(150, idpGuaranteed + 50);   // never cut a real projection or a prominent fallback player
+  const idp = idx.players.filter(p=>p.idp && p.value>0).sort((a,b)=>a.idpRank-b.idpRank).slice(0,idpCap);
   const out = [...off, ...idp].map(shape);
 
   const nDST=out.filter(p=>p.pos==="DST").length, nIDP=out.filter(p=>p.idp).length;
